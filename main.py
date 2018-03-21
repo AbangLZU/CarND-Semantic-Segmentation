@@ -4,6 +4,8 @@ import helper
 import warnings
 from distutils.version import LooseVersion
 import project_tests as tests
+import math
+from tqdm import tqdm
 
 # Check TensorFlow Version
 assert LooseVersion(tf.__version__) >= LooseVersion(
@@ -78,7 +80,7 @@ def load_vgg(sess, vgg_path):
     return image_input, keep_prob, layer3_out, layer4_out, layer7_out
 
 
-# tests.test_load_vgg(load_vgg, tf)
+tests.test_load_vgg(load_vgg, tf)
 
 
 def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
@@ -108,8 +110,7 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
 
     return upsample3
 
-
-# tests.test_layers(layers)
+tests.test_layers(layers)
 
 
 def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
@@ -127,13 +128,13 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
         cross_entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits))
 
         reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        loss = cross_entropy_loss + 0.005 * sum(reg_losses)
+        loss = cross_entropy_loss + 0.0005 * sum(reg_losses)
     with tf.name_scope('train_op'):
-        train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cross_entropy_loss)
-    return logits, loss, train_op
+        train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
+    return logits, train_op, loss
 
 
-# tests.test_optimize(optimize)
+tests.test_optimize(optimize)
 
 
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
@@ -153,21 +154,27 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
     """
     sess.run(tf.global_variables_initializer())
     for epoch in range(epochs):
-        for image, label in get_batches_fn(batch_size):
+
+        print('epoch: ', str(epoch+1) + '/' + str(epochs))
+
+        batches = get_batches_fn(batch_size)
+
+        for inds, data in tqdm(enumerate(batches), desc='Batches', total=math.ceil(289/batch_size)):
             # Training
+            image, label = data
             _, train_loss = sess.run([train_op, cross_entropy_loss], feed_dict={input_image: image,
-                                        correct_label: label, keep_prob:0.5, learning_rate:0.001})
+                                        correct_label: label, keep_prob:0.7, learning_rate:0.0005})
 
-        print("epoch: {0}, loss: {2}".format(epoch, train_loss))
+        print("epoch: {0}, loss: {1}".format(epoch + 1, train_loss))
 
-# tests.test_train_nn(train_nn)
+tests.test_train_nn(train_nn)
 
 
 def run():
     num_classes = 2
     image_shape = (160, 576)
-    num_epoch = 20
-    batch_size = 4
+    num_epoch = 50
+    batch_size = 8
     data_dir = './data'
     runs_dir = './runs'
     # tests.test_for_kitti_dataset(data_dir)
@@ -197,7 +204,7 @@ def run():
 
         correct_label = tf.placeholder(dtype=tf.float32, shape=(None, None, None, num_classes))
 
-        logits, loss, train_op = optimize(layer_output, correct_label, learning_rate, num_classes)
+        logits, train_op, loss = optimize(layer_output, correct_label, learning_rate, num_classes)
 
         saver = tf.train.Saver()
         # Train NN using the train_nn function
@@ -206,7 +213,10 @@ def run():
 
         # Save inference data using helper.save_inference_samples
         helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image)
-        saver.save(sess, 'model')
+        if not os.path.exists('model'):
+            os.mkdir('model')
+
+        saver.save(sess, 'model/model')
         # OPTIONAL: Apply the trained model to a video
 
 
