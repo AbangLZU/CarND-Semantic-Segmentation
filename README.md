@@ -1,4 +1,12 @@
 # Semantic Segmentation
+
+The result:
+
+![](examples/um_000005.png)
+![](examples/um_000017.png)
+![](examples/um_000040.png)
+![](examples/umm_000026.png)
+![](examples/uu_000017.png)
 ### Introduction
 In this project, you'll label the pixels of a road in images using a Fully Convolutional Network (FCN).
 

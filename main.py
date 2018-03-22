@@ -6,6 +6,7 @@ from distutils.version import LooseVersion
 import project_tests as tests
 import math
 from tqdm import tqdm
+import numpy as np
 
 # Check TensorFlow Version
 assert LooseVersion(tf.__version__) >= LooseVersion(
@@ -17,40 +18,6 @@ if not tf.test.gpu_device_name():
     warnings.warn('No GPU found. Please use a GPU to train your neural network.')
 else:
     print('Default GPU Device: {}'.format(tf.test.gpu_device_name()))
-
-
-def conv_1_1(input, num_classes, name_scope='conv_1_1'):
-    """
-    helper function for conv 1*1
-    :param name_spcope: The name of the op
-    :param input: input to the conv1*1
-    :param num_classes
-    :return:1*1 conv operation
-    """
-    with tf.name_scope(name_scope):
-
-        initializer = tf.truncated_normal_initializer(stddev=0.1)
-        output = tf.layers.conv2d(input, num_classes, (1, 1), padding='same',
-                                      kernel_initializer=initializer,
-                                      kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3))
-        return output
-
-
-def upsample(input, num_classes, kernal_size=4, stride=(2, 2), name_scope='upsample'):
-    """
-    :param input:
-    :param num_classes:
-    :param name_scope:
-    :return: upsample op
-    """
-    with tf.name_scope(name_scope):
-        initializer = tf.truncated_normal_initializer(stddev=0.1)
-
-        upsampleing = tf.layers.conv2d_transpose(input, num_classes, kernal_size, stride, padding='same',
-                                        kernel_initializer=initializer,
-                                        kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3))
-
-        return upsampleing
 
 def load_vgg(sess, vgg_path):
     """
@@ -92,23 +59,43 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     :param num_classes: Number of classes to classify
     :return: The Tensor for the last layer of output
     """
-    layer7_1_1 = conv_1_1(vgg_layer7_out, num_classes)
-    layer4_1_1 = conv_1_1(vgg_layer4_out, num_classes)
-    layer3_1_1 = conv_1_1(vgg_layer3_out, num_classes)
+    # Apply 1x1 convolution to layer 7 of Vgg with Regularization to avoid overfitting
+    vgg_layer7_1x1 = tf.layers.conv2d(vgg_layer7_out, num_classes, 1, padding='same', strides=(1, 1),
+                                      kernel_initializer=tf.random_normal_initializer(stddev=0.01),
+                                      kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3))
 
-    upsample7 = upsample(layer7_1_1, num_classes, kernal_size=4, stride=(2, 2))
+    # Upsample the image
+    layer7_upsample = tf.layers.conv2d_transpose(vgg_layer7_1x1, num_classes, 4, strides=(2, 2), padding='same',
+                                                 kernel_initializer=tf.random_normal_initializer(stddev=0.01),
+                                                 kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3))
 
-    with tf.name_scope('skip'):
-        skip4 = tf.add(upsample7, layer4_1_1)
+    # Apply 1x1 convolution to layer 4 of Vgg with Regulartization to avoid overfitting
+    vgg_layer4_1x1 = tf.layers.conv2d(vgg_layer4_out, num_classes, 1, padding='same', strides=(1, 1),
+                                      kernel_initializer=tf.random_normal_initializer(stddev=0.01),
+                                      kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3))
 
-    upsample4 = upsample(skip4, num_classes, kernal_size=4, stride=(2, 2))
+    # Add Skip connection from layer 4
+    decode_layer_1_with_skip = tf.add(layer7_upsample, vgg_layer4_1x1)
 
-    with tf.name_scope('skip'):
-        skip3 = tf.add(upsample4, layer3_1_1)
+    # Upsample with another transposed convolution layer
+    decode_layer_2 = tf.layers.conv2d_transpose(decode_layer_1_with_skip, num_classes, 4, strides=(2, 2), padding='same',
+                                                kernel_initializer=tf.random_normal_initializer(stddev=0.01),
+                                                kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3))
 
-    upsample3 = upsample(skip3, num_classes, kernal_size=16, stride=(8, 8))
+    # Apply 1x1 convolution to layer 3 of Vgg with Regulartization to avoid overfitting
+    vgg_layer3_1x1 = tf.layers.conv2d(vgg_layer3_out, num_classes, 1, padding='same', strides=(1, 1),
+                                      kernel_initializer=tf.random_normal_initializer(stddev=0.01),
+                                      kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3))
 
-    return upsample3
+    # Add Skip connection from layer 3
+    decode_layer_2_with_skip = tf.add(decode_layer_2, vgg_layer3_1x1)
+
+    # Upsample one last time to get original image size
+    decoder_output = tf.layers.conv2d_transpose(decode_layer_2_with_skip, num_classes, 16, strides=(8, 8), padding='same',
+                                                kernel_initializer=tf.random_normal_initializer(stddev=0.01),
+                                                kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3))
+
+    return decoder_output
 
 tests.test_layers(layers)
 
@@ -122,16 +109,16 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     :param num_classes: Number of classes to classify
     :return: Tuple of (logits, train_op, cross_entropy_loss)
     """
-    labels = tf.reshape(correct_label, (-1, num_classes))
     logits = tf.reshape(nn_last_layer, (-1, num_classes))
-    with tf.name_scope('loss'):
-        cross_entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits))
+    correct_label = tf.reshape(correct_label, (-1, num_classes))
 
-        reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        loss = cross_entropy_loss + 0.0005 * sum(reg_losses)
-    with tf.name_scope('train_op'):
-        train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
-    return logits, train_op, loss
+    cross_entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=correct_label))
+
+    optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+
+    train_op = optimizer.minimize(cross_entropy_loss)
+
+    return logits, train_op, cross_entropy_loss
 
 
 tests.test_optimize(optimize)
@@ -159,13 +146,15 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
 
         batches = get_batches_fn(batch_size)
 
+        batch_loss = []
         for inds, data in tqdm(enumerate(batches), desc='Batches', total=math.ceil(289/batch_size)):
             # Training
             image, label = data
             _, train_loss = sess.run([train_op, cross_entropy_loss], feed_dict={input_image: image,
                                         correct_label: label, keep_prob:0.7, learning_rate:0.0005})
-
-        print("epoch: {0}, loss: {1}".format(epoch + 1, train_loss))
+            batch_loss.append(train_loss)
+            print('loss:', train_loss)
+        print("epoch: {0}, average loss: {1}".format(epoch + 1, np.mean(batch_loss)))
 
 tests.test_train_nn(train_nn)
 
@@ -174,7 +163,7 @@ def run():
     num_classes = 2
     image_shape = (160, 576)
     num_epoch = 50
-    batch_size = 8
+    batch_size = 16
     data_dir = './data'
     runs_dir = './runs'
     # tests.test_for_kitti_dataset(data_dir)
